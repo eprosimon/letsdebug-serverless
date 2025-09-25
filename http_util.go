@@ -76,6 +76,29 @@ func (r *httpCheckResult) String() string {
 	return fmt.Sprintf("[%s]", strings.Join(lines, ","))
 }
 
+// copyDialStack returns a copy of the DialStack protected by a read lock.
+func copyDialStack(r *httpCheckResult) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]string, len(r.DialStack))
+	copy(out, r.DialStack)
+	return out
+}
+
+// snapshotHTTPResult atomically snapshots StatusCode, Content and DialStack.
+func snapshotHTTPResult(r *httpCheckResult) (statusCode int, content []byte, dialStack []string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	statusCode = r.StatusCode
+	content = make([]byte, len(r.Content))
+	copy(content, r.Content)
+	dialStack = make([]string, len(r.DialStack))
+	copy(dialStack, r.DialStack)
+	return
+}
+
 type checkHTTPTransport struct {
 	transport http.RoundTripper
 	result    *httpCheckResult
@@ -143,6 +166,9 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 		// Only override the address for this specific domain.
 		// We don't want to mangle redirects.
 		if host == domain {
+			if scanCtx.httpDialPort != "" {
+				port = scanCtx.httpDialPort
+			}
 			return dialFunc(address, port)
 		}
 
@@ -234,10 +260,7 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 		if redirErr != "" {
 			err = redirErr
 		}
-		checkRes.mu.RLock()
-		dialStack := make([]string, len(checkRes.DialStack))
-		copy(dialStack, checkRes.DialStack)
-		checkRes.mu.RUnlock()
+		dialStack := copyDialStack(checkRes)
 		return checkRes, translateHTTPError(domain, address, err, dialStack)
 	}
 
@@ -255,19 +278,13 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 	// If we expect a certain response, check for it
 	if scanCtx.httpExpectResponse != "" {
 		if err != nil {
-			checkRes.mu.RLock()
-			dialStack := make([]string, len(checkRes.DialStack))
-			copy(dialStack, checkRes.DialStack)
-			checkRes.mu.RUnlock()
+			dialStack := copyDialStack(checkRes)
 			return checkRes, translateHTTPError(domain, address,
 				fmt.Errorf(`this test expected the server to respond with "%s" but instead we experienced an error reading the response: %v`,
 					scanCtx.httpExpectResponse, err),
 				dialStack)
 		} else if respStr := string(buf); respStr != scanCtx.httpExpectResponse {
-			checkRes.mu.RLock()
-			dialStack := make([]string, len(checkRes.DialStack))
-			copy(dialStack, checkRes.DialStack)
-			checkRes.mu.RUnlock()
+			dialStack := copyDialStack(checkRes)
 			return checkRes, translateHTTPError(domain, address,
 				fmt.Errorf(`this test expected the server to respond with "%s" but instead we got a response beginning with "%s"`,
 					scanCtx.httpExpectResponse, respStr),
@@ -276,22 +293,13 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 	} else {
 		if err == nil {
 			// By default, assume 404/2xx are ok. Warn on others.
-			checkRes.mu.RLock()
-			statusCode := checkRes.StatusCode
-			content := make([]byte, len(checkRes.Content))
-			copy(content, checkRes.Content)
-			dialStack := make([]string, len(checkRes.DialStack))
-			copy(dialStack, checkRes.DialStack)
-			checkRes.mu.RUnlock()
+			statusCode, content, dialStack := snapshotHTTPResult(checkRes)
 
 			if (statusCode > 299 || statusCode < 200) && statusCode != 404 {
 				return checkRes, unexpectedHttpResponse(domain, resp.Status, string(content), dialStack)
 			}
 		} else {
-			checkRes.mu.RLock()
-			dialStack := make([]string, len(checkRes.DialStack))
-			copy(dialStack, checkRes.DialStack)
-			checkRes.mu.RUnlock()
+			dialStack := copyDialStack(checkRes)
 			return checkRes, translateHTTPError(domain, address,
 				fmt.Errorf(`we experienced an error reading the response: %v`, err),
 				dialStack)

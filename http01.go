@@ -291,10 +291,10 @@ func isLikelyModemRouter(results []*httpCheckResult) *httpCheckResult {
 		if res == nil {
 			continue
 		}
+		res.mu.RLock()
+		server := res.ServerHeader
+		res.mu.RUnlock()
 		for _, toMatch := range likelyModemRouters {
-			res.mu.RLock()
-			server := res.ServerHeader
-			res.mu.RUnlock()
 			if server == toMatch {
 				return res
 			}
@@ -308,11 +308,10 @@ func isLikelyNginxTestcookie(results []*httpCheckResult) *httpCheckResult {
 		if res == nil {
 			continue
 		}
+		res.mu.RLock()
+		content := append([]byte(nil), res.Content...)
+		res.mu.RUnlock()
 		for _, needle := range isLikelyNginxTestcookiePayloads {
-			res.mu.RLock()
-			content := make([]byte, len(res.Content))
-			copy(content, res.Content)
-			res.mu.RUnlock()
 			if bytes.Contains(content, needle) {
 				return res
 			}
@@ -326,11 +325,10 @@ func isHTTP497(results []*httpCheckResult) *httpCheckResult {
 		if res == nil {
 			continue
 		}
+		res.mu.RLock()
+		content := append([]byte(nil), res.Content...)
+		res.mu.RUnlock()
 		for _, needle := range isHTTP497Payloads {
-			res.mu.RLock()
-			content := make([]byte, len(res.Content))
-			copy(content, res.Content)
-			res.mu.RUnlock()
 			if bytes.Contains(content, needle) {
 				return res
 			}
@@ -346,8 +344,7 @@ func isLikelyPaloAltoFirewall(results []*httpCheckResult) *httpCheckResult {
 			continue
 		}
 		res.mu.RLock()
-		content := make([]byte, len(res.Content))
-		copy(content, res.Content)
+		content := append([]byte(nil), res.Content...)
 		res.mu.RUnlock()
 		if bytes.Contains(content, needle) {
 			return res

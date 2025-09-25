@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
@@ -22,7 +23,7 @@ func TestHTTPTimeout(t *testing.T) {
 
 	// Extract the IP from the test server
 	addr := server.Listener.Addr().String()
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("Failed to split address: %v", err)
 	}
@@ -37,6 +38,7 @@ func TestHTTPTimeout(t *testing.T) {
 	ctx := &scanContext{
 		httpRequestPath:    "test",
 		httpExpectResponse: "",
+		httpDialPort:       port,
 	}
 
 	// Test the checkHTTP function
@@ -72,14 +74,14 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("delayed response")); err != nil {
 			// Log error but don't fail the test
-			_ = err // explicitly ignore the error
+			t.Logf("write error: %v", err)
 		}
 	}))
 	defer server.Close()
 
 	// Extract the IP from the test server
 	addr := server.Listener.Addr().String()
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("Failed to split address: %v", err)
 	}
@@ -94,6 +96,7 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	ctx := &scanContext{
 		httpRequestPath:    "test",
 		httpExpectResponse: "",
+		httpDialPort:       port,
 	}
 
 	// Test the checkHTTP function
@@ -122,6 +125,10 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 func TestHTTPTimeoutWithRealDomain(t *testing.T) {
 	// Test timeout behavior with a real domain that might be slow
 	// This test verifies that our timeout fix actually works in practice
+
+	if os.Getenv("LETSDEBUG_INTEGRATION") == "" {
+		t.Skip("integration test: set LETSDEBUG_INTEGRATION=1 to run")
+	}
 
 	// Use a domain that we know can be slow (like logerit.com from the original issue)
 	domain := "logerit.com"

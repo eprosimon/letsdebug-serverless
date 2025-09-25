@@ -20,6 +20,7 @@ type scanContext struct {
 
 	httpRequestPath    string
 	httpExpectResponse string
+	httpDialPort       string // test-only override for HTTP dial port
 }
 
 func newScanContext() *scanContext {
@@ -77,5 +78,5 @@ func (sc *scanContext) LookupRandomHTTPRecord(name string) (net.IP, error) {
 		}
 	}
 
-	return net.IP{}, fmt.Errorf("no AAAA or A records found")
+	return net.IP{}, fmt.Errorf("no AAAA or A records found for %s", name)
 }
