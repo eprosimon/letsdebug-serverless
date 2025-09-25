@@ -134,8 +134,12 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		if !prob.IsZero() {
 			probs = append(probs, prob)
 		}
+		res.mu.RLock()
+		dialStack := make([]string, len(res.DialStack))
+		copy(dialStack, res.DialStack)
+		res.mu.RUnlock()
 		debug = append(debug, fmt.Sprintf("Request to: %s/%s, Result: %s, Issue: %s\nTrace:\n%s\n",
-			domain, ip.String(), res.String(), prob.Name, strings.Join(res.DialStack, "\n")))
+			domain, ip.String(), res.String(), prob.Name, strings.Join(dialStack, "\n")))
 	}
 
 	// Filter out the servers that didn't respond at all
@@ -182,8 +186,13 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 				"the administrative interface of a modem or router. This can indicate an issue with the port forwarding " +
 				"setup on that modem or router. You may need to reconfigure the device to properly forward traffic to your " +
 				"intended webserver.",
-			Detail: fmt.Sprintf(`The web server that responded identified itself as "%s", `+
-				"which is a known webserver commonly used by modems/routers.", res.ServerHeader),
+			Detail: func() string {
+				res.mu.RLock()
+				server := res.ServerHeader
+				res.mu.RUnlock()
+				return fmt.Sprintf(`The web server that responded identified itself as "%s", `+
+					"which is a known webserver commonly used by modems/routers.", server)
+			}(),
 			Severity: SeverityWarning,
 		})
 	}
@@ -207,7 +216,13 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 			Explanation: "A validation request to this domain resulted in an HTTP request being made to a port that expects " +
 				"to receive HTTPS requests. This could be the result of an incorrect redirect (such as to http://example.com:443/) " +
 				"or it could be the result of a webserver misconfiguration, such as trying to enable SSL on a port 80 virtualhost.",
-			Detail:   strings.Join(res.DialStack, "\n"),
+			Detail: func() string {
+				res.mu.RLock()
+				ds := make([]string, len(res.DialStack))
+				copy(ds, res.DialStack)
+				res.mu.RUnlock()
+				return strings.Join(ds, "\n")
+			}(),
 			Severity: SeverityError,
 		})
 	}
@@ -216,7 +231,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		probs = append(probs, Problem{
 			Name: "BlockedByFirewall",
 			Explanation: "The validation request to this domain was blocked by what is likely a " +
-				"Palto Alto web application firewall device. The 'acme-protocol' application needs " +
+				"Palo Alto web application firewall device. The 'acme-protocol' application needs " +
 				"to be permitted on the firewall in order for the request to succeed. See " +
 				"https://community.letsencrypt.org/t/177600 for more information.",
 			Detail:   fmt.Sprintf("The server at %s produced this result.", res.IP.String()),
@@ -267,7 +282,10 @@ func isLikelyModemRouter(results []*httpCheckResult) *httpCheckResult {
 			continue
 		}
 		for _, toMatch := range likelyModemRouters {
-			if res.ServerHeader == toMatch {
+			res.mu.RLock()
+			server := res.ServerHeader
+			res.mu.RUnlock()
+			if server == toMatch {
 				return res
 			}
 		}
@@ -281,7 +299,11 @@ func isLikelyNginxTestcookie(results []*httpCheckResult) *httpCheckResult {
 			continue
 		}
 		for _, needle := range isLikelyNginxTestcookiePayloads {
-			if bytes.Contains(res.Content, needle) {
+			res.mu.RLock()
+			content := make([]byte, len(res.Content))
+			copy(content, res.Content)
+			res.mu.RUnlock()
+			if bytes.Contains(content, needle) {
 				return res
 			}
 		}
@@ -295,7 +317,11 @@ func isHTTP497(results []*httpCheckResult) *httpCheckResult {
 			continue
 		}
 		for _, needle := range isHTTP497Payloads {
-			if bytes.Contains(res.Content, needle) {
+			res.mu.RLock()
+			content := make([]byte, len(res.Content))
+			copy(content, res.Content)
+			res.mu.RUnlock()
+			if bytes.Contains(content, needle) {
 				return res
 			}
 		}
@@ -309,7 +335,11 @@ func isLikelyPaloAltoFirewall(results []*httpCheckResult) *httpCheckResult {
 		if res == nil {
 			continue
 		}
-		if bytes.Contains(res.Content, needle) {
+		res.mu.RLock()
+		content := make([]byte, len(res.Content))
+		copy(content, res.Content)
+		res.mu.RUnlock()
+		if bytes.Contains(content, needle) {
 			return res
 		}
 	}

@@ -313,7 +313,7 @@ func translateHTTPError(domain string, address net.IP, e error, dialStack []stri
 
 	// Make a nicer error message if it was a context timeout
 	if urlErr, ok := e.(*url.Error); ok && urlErr.Timeout() {
-		e = fmt.Errorf("a timeout was experienced while communicating with %s/%s: %v",
+		e = fmt.Errorf("a timeout was experienced while communicating with %s at %s: %v",
 			domain, address.String(), urlErr)
 	}
 
