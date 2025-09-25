@@ -149,10 +149,25 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 	if len(nonZeroResults) > 1 {
 		firstResult := nonZeroResults[0]
 		for _, otherResult := range nonZeroResults[1:] {
-			if firstResult.StatusCode != otherResult.StatusCode ||
-				firstResult.ServerHeader != otherResult.ServerHeader ||
-				firstResult.NumRedirects != otherResult.NumRedirects ||
-				firstResult.InitialStatusCode != otherResult.InitialStatusCode {
+			// Read fields under read locks to avoid data races
+			firstResult.mu.RLock()
+			firstStatusCode := firstResult.StatusCode
+			firstServerHeader := firstResult.ServerHeader
+			firstNumRedirects := firstResult.NumRedirects
+			firstInitialStatusCode := firstResult.InitialStatusCode
+			firstResult.mu.RUnlock()
+
+			otherResult.mu.RLock()
+			otherStatusCode := otherResult.StatusCode
+			otherServerHeader := otherResult.ServerHeader
+			otherNumRedirects := otherResult.NumRedirects
+			otherInitialStatusCode := otherResult.InitialStatusCode
+			otherResult.mu.RUnlock()
+
+			if firstStatusCode != otherStatusCode ||
+				firstServerHeader != otherServerHeader ||
+				firstNumRedirects != otherNumRedirects ||
+				firstInitialStatusCode != otherInitialStatusCode {
 				probs = append(probs, multipleIPAddressDiscrepancy(domain, firstResult, otherResult))
 			}
 		}
@@ -248,6 +263,9 @@ func multipleIPAddressDiscrepancy(domain string, result1, result2 *httpCheckResu
 
 func isLikelyModemRouter(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
 		for _, toMatch := range likelyModemRouters {
 			if res.ServerHeader == toMatch {
 				return res
@@ -259,6 +277,9 @@ func isLikelyModemRouter(results []*httpCheckResult) *httpCheckResult {
 
 func isLikelyNginxTestcookie(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
 		for _, needle := range isLikelyNginxTestcookiePayloads {
 			if bytes.Contains(res.Content, needle) {
 				return res
@@ -270,6 +291,9 @@ func isLikelyNginxTestcookie(results []*httpCheckResult) *httpCheckResult {
 
 func isHTTP497(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
 		for _, needle := range isHTTP497Payloads {
 			if bytes.Contains(res.Content, needle) {
 				return res
@@ -282,6 +306,9 @@ func isHTTP497(results []*httpCheckResult) *httpCheckResult {
 func isLikelyPaloAltoFirewall(results []*httpCheckResult) *httpCheckResult {
 	needle := []byte("acme-protocol")
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
 		if bytes.Contains(res.Content, needle) {
 			return res
 		}

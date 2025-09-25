@@ -48,6 +48,8 @@ func (r *httpCheckResult) Trace(s string) {
 }
 
 func (r *httpCheckResult) IsZero() bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.StatusCode == 0
 }
 
@@ -214,6 +216,15 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 
 	resp, err := cl.Do(req)
 	if resp != nil {
+		// Schedule closing the response body immediately to prevent resource leaks
+		// on any early return paths (including error cases)
+		defer func() {
+			if err := resp.Body.Close(); err != nil {
+				// Log the error but don't fail the request
+				_ = err // explicitly ignore the error
+			}
+		}()
+
 		checkRes.mu.Lock()
 		checkRes.StatusCode = resp.StatusCode
 		checkRes.ServerHeader = resp.Header.Get("Server")
@@ -229,13 +240,6 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 		checkRes.mu.RUnlock()
 		return checkRes, translateHTTPError(domain, address, err, dialStack)
 	}
-
-	defer func() {
-		if err := resp.Body.Close(); err != nil {
-			// Log the error but don't fail the request
-			_ = err // explicitly ignore the error
-		}
-	}()
 
 	maxLen := 8192
 	if l := len(scanCtx.httpExpectResponse) + 2; l > maxLen {

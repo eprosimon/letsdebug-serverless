@@ -77,5 +77,5 @@ func (sc *scanContext) LookupRandomHTTPRecord(name string) (net.IP, error) {
 		}
 	}
 
-	return net.IP{}, fmt.Errorf("no AAAA or A records were found for %s", name)
+	return net.IP{}, fmt.Errorf("no AAAA or A records found")
 }
