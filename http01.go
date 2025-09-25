@@ -10,6 +10,24 @@ import (
 	"github.com/miekg/dns"
 )
 
+// httpResSnap represents an immutable snapshot of httpCheckResult fields
+type httpResSnap struct {
+	StatusCode, NumRedirects, InitialStatusCode int
+	ServerHeader                                string
+}
+
+// snapshot creates an immutable snapshot of httpCheckResult fields
+func snapshot(r *httpCheckResult) httpResSnap {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return httpResSnap{
+		StatusCode:        r.StatusCode,
+		ServerHeader:      r.ServerHeader,
+		NumRedirects:      r.NumRedirects,
+		InitialStatusCode: r.InitialStatusCode,
+	}
+}
+
 var (
 	likelyModemRouters              = []string{"micro_httpd", "cisco-IOS", "LANCOM", "Mini web server 1.0 ZTE corp 2005."}
 	isLikelyNginxTestcookiePayloads = [][]byte{
@@ -134,6 +152,10 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		if !prob.IsZero() {
 			probs = append(probs, prob)
 		}
+		if res == nil {
+			debug = append(debug, fmt.Sprintf("Request to: %s/%s, Result: <nil>, Issue: %s\nTrace:\n", domain, ip.String(), prob.Name))
+			continue
+		}
 		res.mu.RLock()
 		dialStack := make([]string, len(res.DialStack))
 		copy(dialStack, res.DialStack)
@@ -145,7 +167,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 	// Filter out the servers that didn't respond at all
 	var nonZeroResults []*httpCheckResult
 	for _, v := range allCheckResults {
-		if v.IsZero() {
+		if v == nil || v.IsZero() {
 			continue
 		}
 		nonZeroResults = append(nonZeroResults, v)
@@ -153,25 +175,13 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 	if len(nonZeroResults) > 1 {
 		firstResult := nonZeroResults[0]
 		for _, otherResult := range nonZeroResults[1:] {
-			// Read fields under read locks to avoid data races
-			firstResult.mu.RLock()
-			firstStatusCode := firstResult.StatusCode
-			firstServerHeader := firstResult.ServerHeader
-			firstNumRedirects := firstResult.NumRedirects
-			firstInitialStatusCode := firstResult.InitialStatusCode
-			firstResult.mu.RUnlock()
+			first := snapshot(firstResult)
+			other := snapshot(otherResult)
 
-			otherResult.mu.RLock()
-			otherStatusCode := otherResult.StatusCode
-			otherServerHeader := otherResult.ServerHeader
-			otherNumRedirects := otherResult.NumRedirects
-			otherInitialStatusCode := otherResult.InitialStatusCode
-			otherResult.mu.RUnlock()
-
-			if firstStatusCode != otherStatusCode ||
-				firstServerHeader != otherServerHeader ||
-				firstNumRedirects != otherNumRedirects ||
-				firstInitialStatusCode != otherInitialStatusCode {
+			if first.StatusCode != other.StatusCode ||
+				first.ServerHeader != other.ServerHeader ||
+				first.NumRedirects != other.NumRedirects ||
+				first.InitialStatusCode != other.InitialStatusCode {
 				probs = append(probs, multipleIPAddressDiscrepancy(domain, firstResult, otherResult))
 			}
 		}

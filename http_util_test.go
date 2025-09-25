@@ -152,10 +152,10 @@ func TestHTTPTimeoutWithRealDomain(t *testing.T) {
 
 	duration := time.Since(start)
 
-	// The request should complete within a reasonable time (less than 2 seconds)
+	// The request should complete within a reasonable time (less than 4 seconds)
 	// If it takes longer, it means our timeout isn't working
-	if duration > 2*time.Second {
-		t.Errorf("HTTP request took too long: %v, expected completion within 2 seconds due to timeout", duration)
+	if duration > 4*time.Second {
+		t.Errorf("HTTP request took too long: %v, expected completion within 4 seconds due to timeout", duration)
 	}
 
 	// We should get a timeout problem or some other error

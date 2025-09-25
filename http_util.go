@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	httpTimeout = 1 // Reduced from 5 to 3 seconds to prevent local check timeouts
+	httpTimeout = 3 // Keep aligned with comment; 1s is too low for public internet
 )
 
 type redirectError string
