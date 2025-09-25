@@ -70,7 +70,10 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("delayed response"))
+		if _, err := w.Write([]byte("delayed response")); err != nil {
+			// Log error but don't fail the test
+			_ = err // explicitly ignore the error
+		}
 	}))
 	defer server.Close()
 

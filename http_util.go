@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -32,9 +33,13 @@ type httpCheckResult struct {
 	FirstDial         time.Time
 	DialStack         []string
 	Content           []byte
+	mu                sync.RWMutex // Protects concurrent access to shared fields
 }
 
 func (r *httpCheckResult) Trace(s string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.FirstDial.IsZero() {
 		r.FirstDial = time.Now()
 	}
@@ -42,11 +47,14 @@ func (r *httpCheckResult) Trace(s string) {
 		fmt.Sprintf("@%dms: %s", time.Since(r.FirstDial).Nanoseconds()/1e6, s))
 }
 
-func (r httpCheckResult) IsZero() bool {
+func (r *httpCheckResult) IsZero() bool {
 	return r.StatusCode == 0
 }
 
-func (r httpCheckResult) String() string {
+func (r *httpCheckResult) String() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
 	addrType := "IPv6"
 	if r.IP.To4() != nil {
 		addrType = "IPv4"
@@ -79,9 +87,11 @@ func (t checkHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error)
 	}
 
 	if t.result != nil && resp != nil {
+		t.result.mu.Lock()
 		if t.result.InitialStatusCode == 0 {
 			t.result.InitialStatusCode = resp.StatusCode
 		}
+		t.result.mu.Unlock()
 
 		t.result.Trace(fmt.Sprintf("Server response: HTTP %s", resp.Status))
 	}
@@ -103,7 +113,7 @@ func makeSingleShotHTTPTransport() *http.Transport {
 	}
 }
 
-func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (httpCheckResult, Problem) {
+func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckResult, Problem) {
 	dialer := net.Dialer{
 		Timeout: httpTimeout * time.Second,
 	}
@@ -151,7 +161,9 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (httpCheckRe
 		Timeout: httpTimeout * time.Second, // Add explicit timeout to prevent hanging
 		// boulder: va.go fetchHTTP
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			checkRes.mu.Lock()
 			checkRes.NumRedirects++
+			checkRes.mu.Unlock()
 
 			if len(via) >= 10 {
 				redirErr = redirectError(fmt.Sprintf("Too many (%d) redirects, last redirect was to: %s", len(via), req.URL.String()))
@@ -191,7 +203,7 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (httpCheckRe
 
 	req, err := http.NewRequest("GET", reqURL, nil)
 	if err != nil {
-		return *checkRes, internalProblem(fmt.Sprintf("Failed to construct validation request: %v", err), SeverityError)
+		return checkRes, internalProblem(fmt.Sprintf("Failed to construct validation request: %v", err), SeverityError)
 	}
 
 	req.Header.Set("Accept", "*/*")
@@ -202,17 +214,28 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (httpCheckRe
 
 	resp, err := cl.Do(req)
 	if resp != nil {
+		checkRes.mu.Lock()
 		checkRes.StatusCode = resp.StatusCode
 		checkRes.ServerHeader = resp.Header.Get("Server")
+		checkRes.mu.Unlock()
 	}
 	if err != nil {
 		if redirErr != "" {
 			err = redirErr
 		}
-		return *checkRes, translateHTTPError(domain, address, err, checkRes.DialStack)
+		checkRes.mu.RLock()
+		dialStack := make([]string, len(checkRes.DialStack))
+		copy(dialStack, checkRes.DialStack)
+		checkRes.mu.RUnlock()
+		return checkRes, translateHTTPError(domain, address, err, dialStack)
 	}
 
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Log the error but don't fail the request
+			_ = err // explicitly ignore the error
+		}
+	}()
 
 	maxLen := 8192
 	if l := len(scanCtx.httpExpectResponse) + 2; l > maxLen {
@@ -221,35 +244,57 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (httpCheckRe
 	r := io.LimitReader(resp.Body, int64(maxLen))
 
 	buf, err := io.ReadAll(r)
+	checkRes.mu.Lock()
 	checkRes.Content = buf
+	checkRes.mu.Unlock()
 
 	// If we expect a certain response, check for it
 	if scanCtx.httpExpectResponse != "" {
 		if err != nil {
-			return *checkRes, translateHTTPError(domain, address,
-				fmt.Errorf(`This test expected the server to respond with "%s" but instead we experienced an error reading the response: %v`,
+			checkRes.mu.RLock()
+			dialStack := make([]string, len(checkRes.DialStack))
+			copy(dialStack, checkRes.DialStack)
+			checkRes.mu.RUnlock()
+			return checkRes, translateHTTPError(domain, address,
+				fmt.Errorf(`this test expected the server to respond with "%s" but instead we experienced an error reading the response: %v`,
 					scanCtx.httpExpectResponse, err),
-				checkRes.DialStack)
+				dialStack)
 		} else if respStr := string(buf); respStr != scanCtx.httpExpectResponse {
-			return *checkRes, translateHTTPError(domain, address,
-				fmt.Errorf(`This test expected the server to respond with "%s" but instead we got a response beginning with "%s"`,
+			checkRes.mu.RLock()
+			dialStack := make([]string, len(checkRes.DialStack))
+			copy(dialStack, checkRes.DialStack)
+			checkRes.mu.RUnlock()
+			return checkRes, translateHTTPError(domain, address,
+				fmt.Errorf(`this test expected the server to respond with "%s" but instead we got a response beginning with "%s"`,
 					scanCtx.httpExpectResponse, respStr),
-				checkRes.DialStack)
+				dialStack)
 		}
 	} else {
 		if err == nil {
 			// By default, assume 404/2xx are ok. Warn on others.
-			if (checkRes.StatusCode > 299 || checkRes.StatusCode < 200) && checkRes.StatusCode != 404 {
-				return *checkRes, unexpectedHttpResponse(domain, resp.Status, string(checkRes.Content), checkRes.DialStack)
+			checkRes.mu.RLock()
+			statusCode := checkRes.StatusCode
+			content := make([]byte, len(checkRes.Content))
+			copy(content, checkRes.Content)
+			dialStack := make([]string, len(checkRes.DialStack))
+			copy(dialStack, checkRes.DialStack)
+			checkRes.mu.RUnlock()
+
+			if (statusCode > 299 || statusCode < 200) && statusCode != 404 {
+				return checkRes, unexpectedHttpResponse(domain, resp.Status, string(content), dialStack)
 			}
 		} else {
-			return *checkRes, translateHTTPError(domain, address,
+			checkRes.mu.RLock()
+			dialStack := make([]string, len(checkRes.DialStack))
+			copy(dialStack, checkRes.DialStack)
+			checkRes.mu.RUnlock()
+			return checkRes, translateHTTPError(domain, address,
 				fmt.Errorf(`we experienced an error reading the response: %v`, err),
-				checkRes.DialStack)
+				dialStack)
 		}
 	}
 
-	return *checkRes, Problem{}
+	return checkRes, Problem{}
 }
 
 func translateHTTPError(domain string, address net.IP, e error, dialStack []string) Problem {
@@ -264,7 +309,7 @@ func translateHTTPError(domain string, address net.IP, e error, dialStack []stri
 
 	// Make a nicer error message if it was a context timeout
 	if urlErr, ok := e.(*url.Error); ok && urlErr.Timeout() {
-		e = fmt.Errorf("A timeout was experienced while communicating with %s/%s: %v",
+		e = fmt.Errorf("a timeout was experienced while communicating with %s/%s: %v",
 			domain, address.String(), urlErr)
 	}
 

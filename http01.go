@@ -124,7 +124,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 
 	// Track whether responses differ between any of the A/AAAA addresses
 	// for the domain
-	allCheckResults := []httpCheckResult{}
+	allCheckResults := []*httpCheckResult{}
 
 	var debug []string
 
@@ -139,7 +139,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 	}
 
 	// Filter out the servers that didn't respond at all
-	var nonZeroResults []httpCheckResult
+	var nonZeroResults []*httpCheckResult
 	for _, v := range allCheckResults {
 		if v.IsZero() {
 			continue
@@ -160,7 +160,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 
 	probs = append(probs, debugProblem("HTTPCheck", "Requests made to the domain", strings.Join(debug, "\n")))
 
-	if res := isLikelyModemRouter(allCheckResults); !res.IsZero() {
+	if res := isLikelyModemRouter(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "PortForwarding",
 			Explanation: "A request to your domain revealed that the web server that responded may be " +
@@ -173,7 +173,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		})
 	}
 
-	if res := isLikelyNginxTestcookie(allCheckResults); !res.IsZero() {
+	if res := isLikelyNginxTestcookie(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "BlockedByNginxTestCookie",
 			Explanation: "The validation request to this domain was blocked by a deployment of the nginx " +
@@ -186,7 +186,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		})
 	}
 
-	if res := isHTTP497(allCheckResults); !res.IsZero() {
+	if res := isHTTP497(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "HttpOnHttpsPort",
 			Explanation: "A validation request to this domain resulted in an HTTP request being made to a port that expects " +
@@ -197,7 +197,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		})
 	}
 
-	if res := isLikelyPaloAltoFirewall(allCheckResults); !res.IsZero() {
+	if res := isLikelyPaloAltoFirewall(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "BlockedByFirewall",
 			Explanation: "The validation request to this domain was blocked by what is likely a " +
@@ -234,7 +234,7 @@ func reservedAddress(name, address string) Problem {
 	}
 }
 
-func multipleIPAddressDiscrepancy(domain string, result1, result2 httpCheckResult) Problem {
+func multipleIPAddressDiscrepancy(domain string, result1, result2 *httpCheckResult) Problem {
 	return Problem{
 		Name: "MultipleIPAddressDiscrepancy",
 		Explanation: fmt.Sprintf(`%s has multiple IP addresses in its DNS records. While they appear to be accessible on the network, `+
@@ -246,7 +246,7 @@ func multipleIPAddressDiscrepancy(domain string, result1, result2 httpCheckResul
 	}
 }
 
-func isLikelyModemRouter(results []httpCheckResult) httpCheckResult {
+func isLikelyModemRouter(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
 		for _, toMatch := range likelyModemRouters {
 			if res.ServerHeader == toMatch {
@@ -254,10 +254,10 @@ func isLikelyModemRouter(results []httpCheckResult) httpCheckResult {
 			}
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
 
-func isLikelyNginxTestcookie(results []httpCheckResult) httpCheckResult {
+func isLikelyNginxTestcookie(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
 		for _, needle := range isLikelyNginxTestcookiePayloads {
 			if bytes.Contains(res.Content, needle) {
@@ -265,10 +265,10 @@ func isLikelyNginxTestcookie(results []httpCheckResult) httpCheckResult {
 			}
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
 
-func isHTTP497(results []httpCheckResult) httpCheckResult {
+func isHTTP497(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
 		for _, needle := range isHTTP497Payloads {
 			if bytes.Contains(res.Content, needle) {
@@ -276,15 +276,15 @@ func isHTTP497(results []httpCheckResult) httpCheckResult {
 			}
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
 
-func isLikelyPaloAltoFirewall(results []httpCheckResult) httpCheckResult {
+func isLikelyPaloAltoFirewall(results []*httpCheckResult) *httpCheckResult {
 	needle := []byte("acme-protocol")
 	for _, res := range results {
 		if bytes.Contains(res.Content, needle) {
 			return res
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
