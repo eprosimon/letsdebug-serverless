@@ -151,6 +151,7 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 	var redirErr redirectError
 
 	baseHTTPTransport := makeSingleShotHTTPTransport()
+	normalizedDomain := normalizeFqdn(domain)
 	baseHTTPTransport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, _ := net.SplitHostPort(addr)
 		host = normalizeFqdn(host)
@@ -165,7 +166,7 @@ func checkHTTP(scanCtx *scanContext, domain string, address net.IP) (*httpCheckR
 
 		// Only override the address for this specific domain.
 		// We don't want to mangle redirects.
-		if host == domain {
+		if host == normalizedDomain {
 			if scanCtx.httpDialPort != "" {
 				port = scanCtx.httpDialPort
 			}
