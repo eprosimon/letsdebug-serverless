@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Separator } from '@/components/ui/separator'
 import { Search, AlertCircle, CheckCircle, Info, AlertTriangle } from 'lucide-react'
@@ -108,7 +107,47 @@ function HomePageContent() {
         })
       })
 
-      const raw = (await response.json()) as Partial<DebugResponse>
+      // Check if the response is successful
+      if (!response.ok) {
+        let errorMessage = response.statusText || 'Unknown error occurred'
+
+        // Try to parse JSON error response
+        try {
+          const errorData = await response.json()
+          if (errorData && typeof errorData === 'object' && errorData.error) {
+            errorMessage = errorData.error
+          }
+        } catch {
+          // If JSON parsing fails, use the status text or a default message
+          errorMessage = response.statusText || `HTTP ${response.status}: Request failed`
+        }
+
+        setResults({ problems: [], error: errorMessage })
+        toast.error(`Debug failed: ${errorMessage}`)
+        return
+      }
+
+      // Parse JSON response safely
+      let raw: Partial<DebugResponse>
+      try {
+        raw = await response.json() as Partial<DebugResponse>
+      } catch (parseError) {
+        const errorMessage = 'Invalid JSON response from debug service'
+        setResults({ problems: [], error: errorMessage })
+        toast.error(`Debug failed: ${errorMessage}`)
+        console.error('JSON parse error:', parseError)
+        return
+      }
+
+      // Validate the parsed object structure
+      if (!raw || typeof raw !== 'object') {
+        const errorMessage = 'Invalid response format from debug service'
+        setResults({ problems: [], error: errorMessage })
+        toast.error(`Debug failed: ${errorMessage}`)
+        return
+      }
+
+      // Validate that problems is an array
       if (!Array.isArray(raw.problems)) {
         const message = raw.error ?? 'Unexpected response from debug service.'
         setResults({ problems: [], error: message })
@@ -141,6 +180,7 @@ function HomePageContent() {
           toast.info(`Found ${data.problems.length} debug message(s)`)
         }
       }
+    } catch (error) {
       toast.error('Failed to debug domain')
       console.error('Debug error:', error)
     } finally {

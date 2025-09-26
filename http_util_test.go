@@ -11,7 +11,6 @@ import (
 
 func TestHTTPTimeout(t *testing.T) {
 	// Test that HTTP requests respect the timeout
-	start := time.Now()
 
 	// Create a mock server that delays for longer than our timeout
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,9 +40,9 @@ func TestHTTPTimeout(t *testing.T) {
 		httpDialPort:       port,
 	}
 
-	// Test the checkHTTP function
+	// Test the checkHTTP function - measure only the actual HTTP call
+	start := time.Now()
 	result, problem := checkHTTP(ctx, "test.example.com", ip)
-
 	duration := time.Since(start)
 
 	// The request should timeout within a reasonable time (less than 4 seconds)
@@ -66,7 +65,6 @@ func TestHTTPTimeout(t *testing.T) {
 
 func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	// Test with a server that actually takes time to respond
-	start := time.Now()
 
 	// Channel to capture write errors from the handler goroutine
 	writeErrorChan := make(chan error, 1)
@@ -106,8 +104,10 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 		httpDialPort:       port,
 	}
 
-	// Test the checkHTTP function
+	// Test the checkHTTP function - measure only the actual HTTP call
+	start := time.Now()
 	result, problem := checkHTTP(ctx, "test.example.com", ip)
+	duration := time.Since(start)
 
 	// Check for any write errors from the handler goroutine
 	select {
@@ -116,8 +116,6 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	default:
 		// No write error occurred
 	}
-
-	duration := time.Since(start)
 
 	// The request should timeout within a reasonable time (less than 5 seconds)
 	if duration > 5*time.Second {
@@ -167,11 +165,9 @@ func TestHTTPTimeoutWithRealDomain(t *testing.T) {
 		httpExpectResponse: "",
 	}
 
+	// Test the checkHTTP function - measure only the actual HTTP call
 	start := time.Now()
-
-	// Test the checkHTTP function
 	_, problem := checkHTTP(ctx, domain, ip)
-
 	duration := time.Since(start)
 
 	// The request should complete within a reasonable time (less than 4 seconds)
