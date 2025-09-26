@@ -108,13 +108,24 @@ function HomePageContent() {
         })
       })
 
-      const data: DebugResponse = await response.json()
+      const raw = (await response.json()) as Partial<DebugResponse>
+      if (!Array.isArray(raw.problems)) {
+        const message = raw.error ?? 'Unexpected response from debug service.'
+        setResults({ problems: [], error: message })
+        toast.error(`Debug failed: ${message}`)
+        return
+      }
+
+      const data: DebugResponse = {
+        problems: raw.problems,
+        error: raw.error,
+      }
       setResults(data)
 
       if (data.error) {
         toast.error(`Debug failed: ${data.error}`)
       } else if (data.problems.length === 0) {
-        toast.success('No issues found! Domain looks good for Let&apos;s Encrypt.')
+        toast.success('No issues found! Domain looks good for Let\'s Encrypt.')
       } else {
         const fatalCount = data.problems.filter(p => p.severity === 'Fatal').length
         const errorCount = data.problems.filter(p => p.severity === 'Error').length
@@ -130,7 +141,6 @@ function HomePageContent() {
           toast.info(`Found ${data.problems.length} debug message(s)`)
         }
       }
-    } catch (error) {
       toast.error('Failed to debug domain')
       console.error('Debug error:', error)
     } finally {

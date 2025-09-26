@@ -1,10 +1,9 @@
 "use client"
 
 import { Toaster as Sonner } from "sonner"
-import { useEffect, useState } from "react"
+import { useEffect, useState, type ComponentProps } from "react"
 
-type ToasterProps = React.ComponentProps<typeof Sonner>
-
+type ToasterProps = ComponentProps<typeof Sonner>
 const Toaster = ({ ...props }: ToasterProps) => {
   const [mounted, setMounted] = useState(false)
 

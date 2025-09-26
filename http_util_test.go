@@ -68,13 +68,20 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	// Test with a server that actually takes time to respond
 	start := time.Now()
 
+	// Channel to capture write errors from the handler goroutine
+	writeErrorChan := make(chan error, 1)
+
 	// Create a server that delays for 5 seconds (longer than our 3-second timeout)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
 		w.WriteHeader(http.StatusOK)
 		if _, err := w.Write([]byte("delayed response")); err != nil {
-			// Log error but don't fail the test
-			t.Logf("write error: %v", err)
+			// Send error to main test goroutine instead of calling t.Logf
+			select {
+			case writeErrorChan <- err:
+			default:
+				// Channel is full, error will be lost but test won't panic
+			}
 		}
 	}))
 	defer server.Close()
@@ -101,6 +108,14 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 
 	// Test the checkHTTP function
 	result, problem := checkHTTP(ctx, "test.example.com", ip)
+
+	// Check for any write errors from the handler goroutine
+	select {
+	case writeErr := <-writeErrorChan:
+		t.Logf("write error: %v", writeErr)
+	default:
+		// No write error occurred
+	}
 
 	duration := time.Since(start)
 
