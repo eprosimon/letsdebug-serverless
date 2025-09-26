@@ -3,14 +3,12 @@ package letsdebug
 import (
 	"context"
 	"crypto/x509"
-	"database/sql"
 	"encoding/pem"
 	"encoding/xml"
 	"errors"
 	"net"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 
@@ -28,8 +26,6 @@ import (
 
 	"encoding/json"
 
-	// Driver for crtwatch/ratelimitChecker
-	_ "github.com/lib/pq"
 	"github.com/miekg/dns"
 	"github.com/weppos/publicsuffix-go/net/publicsuffix"
 	psl "github.com/weppos/publicsuffix-go/publicsuffix"
@@ -75,10 +71,10 @@ func (c validDomainChecker) Check(ctx *scanContext, domain string, method Valida
 	}
 
 	for _, ch := range []byte(domain) {
-		if !(('a' <= ch && ch <= 'z') ||
-			('A' <= ch && ch <= 'A') ||
-			('0' <= ch && ch <= '9') ||
-			ch == '.' || ch == '-') {
+		if ('a' > ch || ch > 'z') &&
+			('A' > ch || ch > 'Z') &&
+			('0' > ch || ch > '9') &&
+			ch != '.' && ch != '-' {
 			probs = append(probs, invalidDomain(domain, fmt.Sprintf("Invalid character present: %c", ch)))
 			return probs, nil
 		}
@@ -234,7 +230,7 @@ func (c caaChecker) Check(ctx *scanContext, domain string, method ValidationMeth
 			case "issuewild":
 				issuewild = append(issuewild, caaRr)
 			case "iodef":
-				break
+				// iodef records are informational, continue processing
 			default:
 				if caaRr.Flag == 1 {
 					criticalUnknown = append(criticalUnknown, caaRr)
@@ -429,7 +425,12 @@ func (c statusioChecker) Check(ctx *scanContext, domain string, method Validatio
 		// some connectivity errors with status.io is probably not worth reporting
 		return probs, nil
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Log error but don't fail the request
+			_ = err // explicitly ignore the error
+		}
+	}()
 
 	apiResp := struct {
 		Result struct {
@@ -462,207 +463,6 @@ func statusioNotOperational(status string, updated time.Time) Problem {
 			`Depending on the reported problem, this may affect certificate issuance. For more information, please visit the status page.`, status, updated),
 		Detail:   "https://letsencrypt.status.io/",
 		Severity: SeverityWarning,
-	}
-}
-
-type crtList map[string]*x509.Certificate
-
-// FindCommonPSLCertificates finds any certificates which contain any DNSName
-// that shares the Registered Domain `registeredDomain`.
-func (l crtList) FindWithCommonRegisteredDomain(registeredDomain string) sortedCertificates {
-	var out sortedCertificates
-
-	for _, cert := range l {
-		for _, name := range cert.DNSNames {
-			if nameRegDomain, _ := publicsuffix.EffectiveTLDPlusOne(name); nameRegDomain == registeredDomain {
-				out = append(out, cert)
-				break
-			}
-		}
-	}
-
-	sort.Sort(out)
-
-	return out
-}
-
-func (l crtList) GetOldestCertificate() *x509.Certificate {
-	var oldest *x509.Certificate
-	for _, crt := range l {
-		if oldest == nil || crt.NotBefore.Before(oldest.NotBefore) {
-			oldest = crt
-		}
-	}
-	return oldest
-}
-
-// CountDuplicates counts how many duplicate certificates there are
-// that also contain the name `domain`
-func (l crtList) CountDuplicates(domain string) map[string]int {
-	counts := map[string]int{}
-
-	for _, cert := range l {
-		found := false
-		for _, name := range cert.DNSNames {
-			if name == domain {
-				found = true
-				break
-			}
-		}
-		if !found {
-			continue
-		}
-		names := make([]string, len(cert.DNSNames))
-		copy(names, cert.DNSNames)
-		sort.Strings(names)
-		k := strings.Join(names, ",")
-		counts[k]++
-	}
-
-	return counts
-}
-
-// rateLimitChecker ensures that the domain is not currently affected
-// by domain-based rate limits using crtwatch's database
-type rateLimitChecker struct {
-}
-
-type sortedCertificates []*x509.Certificate
-
-func (certs sortedCertificates) Len() int      { return len(certs) }
-func (certs sortedCertificates) Swap(i, j int) { certs[i], certs[j] = certs[j], certs[i] }
-func (certs sortedCertificates) Less(i, j int) bool {
-	return certs[j].NotBefore.Before(certs[i].NotBefore)
-}
-
-const rateLimitCheckerQuery = `
-WITH ci AS
-  (SELECT min(sub.CERTIFICATE_ID) ID,
-          min(sub.ISSUER_CA_ID) ISSUER_CA_ID,
-          sub.CERTIFICATE DER
-   FROM
-     (SELECT *
-      FROM certificate_and_identities cai
-      WHERE plainto_tsquery('%s') @@ identities(cai.CERTIFICATE)
-        AND cai.NAME_VALUE ILIKE ('%%%s%%')
-        AND x509_notBefore(cai.CERTIFICATE) >= '%s'
-        AND cai.issuer_ca_id IN (16418, 183267, 183283)
-      LIMIT 1000) sub
-   GROUP BY sub.CERTIFICATE)
-SELECT ci.DER der
-FROM ci
-LEFT JOIN LATERAL
-  (SELECT min(ctle.ENTRY_TIMESTAMP) ENTRY_TIMESTAMP
-   FROM ct_log_entry ctle
-   WHERE ctle.CERTIFICATE_ID = ci.ID ) le ON TRUE,
-                                             ca
-WHERE ci.ISSUER_CA_ID = ca.ID
-ORDER BY le.ENTRY_TIMESTAMP DESC;`
-
-// Pointer receiver because we're keeping state across runs
-func (c *rateLimitChecker) Check(ctx *scanContext, domain string, method ValidationMethod) ([]Problem, error) {
-	if os.Getenv("LETSDEBUG_DISABLE_CERTWATCH") != "" {
-		return nil, errNotApplicable
-	}
-
-	domain = strings.TrimPrefix(domain, "*.")
-
-	db, err := sql.Open("postgres", "user=guest dbname=certwatch host=crt.sh sslmode=disable connect_timeout=5")
-	if err != nil {
-		return []Problem{
-			internalProblem(fmt.Sprintf("Failed to connect to certwatch database to check rate limits: %v", err), SeverityDebug),
-		}, nil
-	}
-	defer db.Close()
-
-	// Since we are checking rate limits, we need to query the Registered Domain
-	// for the domain in question
-	registeredDomain, _ := publicsuffix.EffectiveTLDPlusOne(domain)
-
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	// Avoiding using a prepared statement here because it's being weird with crt.sh
-	q := fmt.Sprintf(rateLimitCheckerQuery,
-		registeredDomain, registeredDomain, time.Now().Add(-168*time.Hour).Format(time.RFC3339))
-	rows, err := db.QueryContext(timeoutCtx, q)
-	if err != nil && err != sql.ErrNoRows {
-		return []Problem{
-			internalProblem(fmt.Sprintf("Failed to query certwatch database to check rate limits: %v", err), SeverityDebug),
-		}, nil
-	}
-
-	probs := []Problem{}
-
-	// Read in the DER-encoded certificates
-	certs := crtList{}
-	var certBytes []byte
-	for rows.Next() {
-		if err := rows.Scan(&certBytes); err != nil {
-			probs = append(probs, internalProblem(fmt.Sprintf("Failed to query certwatch database while checking rate limits: %v", err), SeverityDebug))
-			break
-		}
-		crt, err := x509.ParseCertificate(certBytes)
-		if err != nil {
-			probs = append(probs, internalProblem(fmt.Sprintf("Failed to parse certificate while checking rate limits: %v", err), SeverityDebug))
-			continue
-		}
-		certs[crt.SerialNumber.String()] = crt
-	}
-	if err := rows.Err(); err != nil {
-		return []Problem{
-			internalProblem(fmt.Sprintf("Failed to query certwatch database to check rate limits: %v", err), SeverityDebug),
-		}, nil
-	}
-
-	var debug string
-
-	// Limit: Certificates per Registered Domain
-	// TODO: implement Renewal Exemption
-	certsTowardsRateLimit := certs.FindWithCommonRegisteredDomain(registeredDomain)
-	if len(certs) > 0 && len(certsTowardsRateLimit) >= 50 {
-		dropOff := certs.GetOldestCertificate().NotBefore.Add(7 * 24 * time.Hour)
-		dropOffDiff := time.Until(dropOff).Truncate(time.Minute)
-
-		probs = append(probs, rateLimited(domain, fmt.Sprintf("The 'Certificates per Registered Domain' limit ("+
-			"50 certificates per week that share the same Registered Domain: %s) has been exceeded. "+
-			"There is no way to work around this rate limit. "+
-			"The next non-renewal certificate for this Registered Domain should be issuable after %v (%v from now).",
-			registeredDomain, dropOff, dropOffDiff)))
-	}
-
-	for _, cert := range certsTowardsRateLimit {
-		debug = fmt.Sprintf("%s\nSerial: %s\nNotBefore: %v\nNames: %v\n", debug, cert.SerialNumber.String(), cert.NotBefore, cert.DNSNames)
-	}
-
-	// Limit: Duplicate Certificate limit of 5 certificates per week
-	for names, dupes := range certs.CountDuplicates(domain) {
-		if dupes < 5 {
-			continue
-		}
-		probs = append(probs, rateLimited(domain,
-			fmt.Sprintf(`The Duplicate Certificate limit (5 certificates with the exact same set of domains per week) has been `+
-				`exceeded and is affecting the domain "%s". The exact set of domains affected is: "%v". It may be possible to avoid this `+
-				`rate limit by issuing a certificate with an additional or different domain name.`, domain, names)))
-	}
-
-	if debug != "" {
-		probs = append(probs, debugProblem("RateLimit",
-			fmt.Sprintf("%d Certificates contributing to rate limits for this domain", len(certsTowardsRateLimit)), debug))
-	}
-
-	return probs, nil
-}
-
-func rateLimited(domain, detail string) Problem {
-	registeredDomain, _ := publicsuffix.EffectiveTLDPlusOne(domain)
-	return Problem{
-		Name: "RateLimit",
-		Explanation: fmt.Sprintf(`%s is currently affected by Let's Encrypt-based rate limits (https://letsencrypt.org/docs/rate-limits/). `+
-			`You may review certificates that have already been issued by visiting https://crt.sh/?q=%%%s . `+
-			`Please note that it is not possible to ask for a rate limit to be manually cleared.`, domain, registeredDomain),
-		Detail:   detail,
-		Severity: SeverityError,
 	}
 }
 
@@ -777,7 +577,7 @@ func (c *acmeStagingChecker) Check(ctx *scanContext, domain string, method Valid
 
 			chal, ok := authz.ChallengeMap[string(method)]
 			if !ok {
-				unhandledError(fmt.Errorf("Missing challenge method (want %v): %v", method, authz.ChallengeMap))
+				unhandledError(fmt.Errorf("missing challenge method (want %v): %v", method, authz.ChallengeMap))
 				return
 			}
 
@@ -906,7 +706,12 @@ func (c *ofacSanctionChecker) poll() error {
 		return err
 	}
 
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			// Log error but don't fail the request
+			_ = err // explicitly ignore the error
+		}
+	}()
 
 	dec := xml.NewDecoder(resp.Body)
 

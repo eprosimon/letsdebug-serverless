@@ -19,7 +19,7 @@ const (
 
 var (
 	validMethods     = map[ValidationMethod]bool{HTTP01: true, DNS01: true, TLSALPN01: true}
-	errNotApplicable = errors.New("Checker not applicable for this domain and method")
+	errNotApplicable = errors.New("checker not applicable for this domain and method")
 	checkers         []checker
 )
 

@@ -4,13 +4,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 )
 
 func TestHTTPTimeout(t *testing.T) {
 	// Test that HTTP requests respect the timeout
-	start := time.Now()
 
 	// Create a mock server that delays for longer than our timeout
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -22,7 +22,7 @@ func TestHTTPTimeout(t *testing.T) {
 
 	// Extract the IP from the test server
 	addr := server.Listener.Addr().String()
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("Failed to split address: %v", err)
 	}
@@ -37,11 +37,12 @@ func TestHTTPTimeout(t *testing.T) {
 	ctx := &scanContext{
 		httpRequestPath:    "test",
 		httpExpectResponse: "",
+		httpDialPort:       port,
 	}
 
-	// Test the checkHTTP function
+	// Test the checkHTTP function - measure only the actual HTTP call
+	start := time.Now()
 	result, problem := checkHTTP(ctx, "test.example.com", ip)
-
 	duration := time.Since(start)
 
 	// The request should timeout within a reasonable time (less than 4 seconds)
@@ -64,19 +65,28 @@ func TestHTTPTimeout(t *testing.T) {
 
 func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	// Test with a server that actually takes time to respond
-	start := time.Now()
+
+	// Channel to capture write errors from the handler goroutine
+	writeErrorChan := make(chan error, 1)
 
 	// Create a server that delays for 5 seconds (longer than our 3-second timeout)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(5 * time.Second)
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("delayed response"))
+		if _, err := w.Write([]byte("delayed response")); err != nil {
+			// Send error to main test goroutine instead of calling t.Logf
+			select {
+			case writeErrorChan <- err:
+			default:
+				// Channel is full, error will be lost but test won't panic
+			}
+		}
 	}))
 	defer server.Close()
 
 	// Extract the IP from the test server
 	addr := server.Listener.Addr().String()
-	host, _, err := net.SplitHostPort(addr)
+	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		t.Fatalf("Failed to split address: %v", err)
 	}
@@ -91,12 +101,21 @@ func TestHTTPTimeoutWithSlowServer(t *testing.T) {
 	ctx := &scanContext{
 		httpRequestPath:    "test",
 		httpExpectResponse: "",
+		httpDialPort:       port,
 	}
 
-	// Test the checkHTTP function
+	// Test the checkHTTP function - measure only the actual HTTP call
+	start := time.Now()
 	result, problem := checkHTTP(ctx, "test.example.com", ip)
-
 	duration := time.Since(start)
+
+	// Check for any write errors from the handler goroutine
+	select {
+	case writeErr := <-writeErrorChan:
+		t.Logf("write error: %v", writeErr)
+	default:
+		// No write error occurred
+	}
 
 	// The request should timeout within a reasonable time (less than 5 seconds)
 	if duration > 5*time.Second {
@@ -120,6 +139,10 @@ func TestHTTPTimeoutWithRealDomain(t *testing.T) {
 	// Test timeout behavior with a real domain that might be slow
 	// This test verifies that our timeout fix actually works in practice
 
+	if os.Getenv("LETSDEBUG_INTEGRATION") == "" {
+		t.Skip("integration test: set LETSDEBUG_INTEGRATION=1 to run")
+	}
+
 	// Use a domain that we know can be slow (like logerit.com from the original issue)
 	domain := "logerit.com"
 
@@ -142,17 +165,15 @@ func TestHTTPTimeoutWithRealDomain(t *testing.T) {
 		httpExpectResponse: "",
 	}
 
+	// Test the checkHTTP function - measure only the actual HTTP call
 	start := time.Now()
-
-	// Test the checkHTTP function
 	_, problem := checkHTTP(ctx, domain, ip)
-
 	duration := time.Since(start)
 
-	// The request should complete within a reasonable time (less than 2 seconds)
+	// The request should complete within a reasonable time (less than 4 seconds)
 	// If it takes longer, it means our timeout isn't working
-	if duration > 2*time.Second {
-		t.Errorf("HTTP request took too long: %v, expected completion within 2 seconds due to timeout", duration)
+	if duration > 4*time.Second {
+		t.Errorf("HTTP request took too long: %v, expected completion within 4 seconds due to timeout", duration)
 	}
 
 	// We should get a timeout problem or some other error

@@ -10,6 +10,24 @@ import (
 	"github.com/miekg/dns"
 )
 
+// httpResSnap represents an immutable snapshot of httpCheckResult fields
+type httpResSnap struct {
+	StatusCode, NumRedirects, InitialStatusCode int
+	ServerHeader                                string
+}
+
+// snapshot creates an immutable snapshot of httpCheckResult fields
+func snapshot(r *httpCheckResult) httpResSnap {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return httpResSnap{
+		StatusCode:        r.StatusCode,
+		ServerHeader:      r.ServerHeader,
+		NumRedirects:      r.NumRedirects,
+		InitialStatusCode: r.InitialStatusCode,
+	}
+}
+
 var (
 	likelyModemRouters              = []string{"micro_httpd", "cisco-IOS", "LANCOM", "Mini web server 1.0 ZTE corp 2005."}
 	isLikelyNginxTestcookiePayloads = [][]byte{
@@ -124,7 +142,7 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 
 	// Track whether responses differ between any of the A/AAAA addresses
 	// for the domain
-	allCheckResults := []httpCheckResult{}
+	allCheckResults := []*httpCheckResult{}
 
 	var debug []string
 
@@ -134,14 +152,22 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		if !prob.IsZero() {
 			probs = append(probs, prob)
 		}
+		if res == nil {
+			debug = append(debug, fmt.Sprintf("Request to: %s/%s, Result: <nil>, Issue: %s\nTrace:\n", domain, ip.String(), prob.Name))
+			continue
+		}
+		res.mu.RLock()
+		dialStack := make([]string, len(res.DialStack))
+		copy(dialStack, res.DialStack)
+		res.mu.RUnlock()
 		debug = append(debug, fmt.Sprintf("Request to: %s/%s, Result: %s, Issue: %s\nTrace:\n%s\n",
-			domain, ip.String(), res.String(), prob.Name, strings.Join(res.DialStack, "\n")))
+			domain, ip.String(), res.String(), prob.Name, strings.Join(dialStack, "\n")))
 	}
 
 	// Filter out the servers that didn't respond at all
-	var nonZeroResults []httpCheckResult
+	var nonZeroResults []*httpCheckResult
 	for _, v := range allCheckResults {
-		if v.IsZero() {
+		if v == nil || v.IsZero() {
 			continue
 		}
 		nonZeroResults = append(nonZeroResults, v)
@@ -149,10 +175,13 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 	if len(nonZeroResults) > 1 {
 		firstResult := nonZeroResults[0]
 		for _, otherResult := range nonZeroResults[1:] {
-			if firstResult.StatusCode != otherResult.StatusCode ||
-				firstResult.ServerHeader != otherResult.ServerHeader ||
-				firstResult.NumRedirects != otherResult.NumRedirects ||
-				firstResult.InitialStatusCode != otherResult.InitialStatusCode {
+			first := snapshot(firstResult)
+			other := snapshot(otherResult)
+
+			if first.StatusCode != other.StatusCode ||
+				first.ServerHeader != other.ServerHeader ||
+				first.NumRedirects != other.NumRedirects ||
+				first.InitialStatusCode != other.InitialStatusCode {
 				probs = append(probs, multipleIPAddressDiscrepancy(domain, firstResult, otherResult))
 			}
 		}
@@ -160,20 +189,25 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 
 	probs = append(probs, debugProblem("HTTPCheck", "Requests made to the domain", strings.Join(debug, "\n")))
 
-	if res := isLikelyModemRouter(allCheckResults); !res.IsZero() {
+	if res := isLikelyModemRouter(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "PortForwarding",
 			Explanation: "A request to your domain revealed that the web server that responded may be " +
 				"the administrative interface of a modem or router. This can indicate an issue with the port forwarding " +
 				"setup on that modem or router. You may need to reconfigure the device to properly forward traffic to your " +
 				"intended webserver.",
-			Detail: fmt.Sprintf(`The web server that responded identified itself as "%s", `+
-				"which is a known webserver commonly used by modems/routers.", res.ServerHeader),
+			Detail: func() string {
+				res.mu.RLock()
+				server := res.ServerHeader
+				res.mu.RUnlock()
+				return fmt.Sprintf(`The web server that responded identified itself as "%s", `+
+					"which is a known webserver commonly used by modems/routers.", server)
+			}(),
 			Severity: SeverityWarning,
 		})
 	}
 
-	if res := isLikelyNginxTestcookie(allCheckResults); !res.IsZero() {
+	if res := isLikelyNginxTestcookie(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "BlockedByNginxTestCookie",
 			Explanation: "The validation request to this domain was blocked by a deployment of the nginx " +
@@ -186,22 +220,28 @@ func (c httpAccessibilityChecker) Check(ctx *scanContext, domain string, method 
 		})
 	}
 
-	if res := isHTTP497(allCheckResults); !res.IsZero() {
+	if res := isHTTP497(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "HttpOnHttpsPort",
 			Explanation: "A validation request to this domain resulted in an HTTP request being made to a port that expects " +
 				"to receive HTTPS requests. This could be the result of an incorrect redirect (such as to http://example.com:443/) " +
 				"or it could be the result of a webserver misconfiguration, such as trying to enable SSL on a port 80 virtualhost.",
-			Detail:   strings.Join(res.DialStack, "\n"),
+			Detail: func() string {
+				res.mu.RLock()
+				ds := make([]string, len(res.DialStack))
+				copy(ds, res.DialStack)
+				res.mu.RUnlock()
+				return strings.Join(ds, "\n")
+			}(),
 			Severity: SeverityError,
 		})
 	}
 
-	if res := isLikelyPaloAltoFirewall(allCheckResults); !res.IsZero() {
+	if res := isLikelyPaloAltoFirewall(allCheckResults); res != nil && !res.IsZero() {
 		probs = append(probs, Problem{
 			Name: "BlockedByFirewall",
 			Explanation: "The validation request to this domain was blocked by what is likely a " +
-				"Palto Alto web application firewall device. The 'acme-protocol' application needs " +
+				"Palo Alto web application firewall device. The 'acme-protocol' application needs " +
 				"to be permitted on the firewall in order for the request to succeed. See " +
 				"https://community.letsencrypt.org/t/177600 for more information.",
 			Detail:   fmt.Sprintf("The server at %s produced this result.", res.IP.String()),
@@ -234,7 +274,7 @@ func reservedAddress(name, address string) Problem {
 	}
 }
 
-func multipleIPAddressDiscrepancy(domain string, result1, result2 httpCheckResult) Problem {
+func multipleIPAddressDiscrepancy(domain string, result1, result2 *httpCheckResult) Problem {
 	return Problem{
 		Name: "MultipleIPAddressDiscrepancy",
 		Explanation: fmt.Sprintf(`%s has multiple IP addresses in its DNS records. While they appear to be accessible on the network, `+
@@ -246,45 +286,69 @@ func multipleIPAddressDiscrepancy(domain string, result1, result2 httpCheckResul
 	}
 }
 
-func isLikelyModemRouter(results []httpCheckResult) httpCheckResult {
+func isLikelyModemRouter(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
+		res.mu.RLock()
+		server := res.ServerHeader
+		res.mu.RUnlock()
 		for _, toMatch := range likelyModemRouters {
-			if res.ServerHeader == toMatch {
+			if server == toMatch {
 				return res
 			}
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
 
-func isLikelyNginxTestcookie(results []httpCheckResult) httpCheckResult {
+func isLikelyNginxTestcookie(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
+		res.mu.RLock()
+		content := append([]byte(nil), res.Content...)
+		res.mu.RUnlock()
 		for _, needle := range isLikelyNginxTestcookiePayloads {
-			if bytes.Contains(res.Content, needle) {
+			if bytes.Contains(content, needle) {
 				return res
 			}
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
 
-func isHTTP497(results []httpCheckResult) httpCheckResult {
+func isHTTP497(results []*httpCheckResult) *httpCheckResult {
 	for _, res := range results {
+		if res == nil {
+			continue
+		}
+		res.mu.RLock()
+		content := append([]byte(nil), res.Content...)
+		res.mu.RUnlock()
 		for _, needle := range isHTTP497Payloads {
-			if bytes.Contains(res.Content, needle) {
+			if bytes.Contains(content, needle) {
 				return res
 			}
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
 
-func isLikelyPaloAltoFirewall(results []httpCheckResult) httpCheckResult {
+func isLikelyPaloAltoFirewall(results []*httpCheckResult) *httpCheckResult {
 	needle := []byte("acme-protocol")
 	for _, res := range results {
-		if bytes.Contains(res.Content, needle) {
+		if res == nil {
+			continue
+		}
+		res.mu.RLock()
+		content := append([]byte(nil), res.Content...)
+		res.mu.RUnlock()
+		if bytes.Contains(content, needle) {
 			return res
 		}
 	}
-	return httpCheckResult{}
+	return nil
 }
