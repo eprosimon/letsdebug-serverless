@@ -1,25 +1,41 @@
 version: 2
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: "weekly"
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "gomod"
     directory: "/"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "gomod"
     directory: "/web"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
 
   - package-ecosystem: "npm"
     directory: "/web"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "all-dependencies"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
