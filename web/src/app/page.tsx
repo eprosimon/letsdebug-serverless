@@ -23,6 +23,45 @@ interface DebugResponse {
   error?: string
 }
 
+const domainPattern = /^(?:\*\.)?(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9-]{2,63}$/i
+
+function normalizeDomainInput(value: string): string {
+  const trimmed = value.trim().toLowerCase()
+  const withoutScheme = trimmed.replace(/^https?:\/\//, '')
+  const withoutPath = withoutScheme.split(/[/?#]/)[0] ?? ''
+  const withoutPort = withoutPath.replace(/:\d+$/, '')
+  return withoutPort.replace(/\.$/, '')
+}
+
+function isLikelyValidDomain(value: string): boolean {
+  if (!value || value.length > 253 || value.includes(' ')) {
+    return false
+  }
+  return domainPattern.test(value)
+}
+
+function sanitizeUserErrorMessage(message?: string): string {
+  if (!message) {
+    return 'Unable to complete the debug check right now.'
+  }
+
+  const normalized = message.toLowerCase()
+  if (normalized.includes('valid domain') || normalized.includes('domain is required')) {
+    return 'Please enter a valid domain name.'
+  }
+  if (normalized.includes('content-type')) {
+    return 'The request format was invalid. Please try again.'
+  }
+  if (normalized.includes('origin not allowed')) {
+    return 'This request was blocked by a security policy.'
+  }
+  if (normalized.includes('method not allowed')) {
+    return 'This request method is not supported.'
+  }
+
+  return 'Unable to complete the debug check right now.'
+}
+
 // Default to HTTP-01 validation method
 
 const severityIcons = {
@@ -66,7 +105,8 @@ function HomePageContent() {
     const domainParam = searchParams.get('domain')
 
     if (domainParam) {
-      setDomain(domainParam)
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setDomain(normalizeDomainInput(domainParam))
     }
   }, [searchParams])
 
@@ -84,46 +124,60 @@ function HomePageContent() {
   }
 
   const handleDebug = async () => {
-    if (!domain.trim()) {
-      toast.error('Please enter a domain')
+    const normalizedDomain = normalizeDomainInput(domain)
+    if (!normalizedDomain) {
+      toast.error('Please enter a domain.')
+      return
+    }
+    if (!isLikelyValidDomain(normalizedDomain)) {
+      toast.error('Enter a valid domain name (for example: example.com).')
       return
     }
 
     // Update URL only on submit
-    updateURL(domain.trim())
+    setDomain(normalizedDomain)
+    updateURL(normalizedDomain)
 
     setLoading(true)
     setResults(null)
 
     try {
-      const response = await fetch('/api/debug', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          domain: domain.trim(),
-          method
-        })
-      })
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 25000)
+      const response = await (async () => {
+        try {
+          return await fetch('/api/debug', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              domain: normalizedDomain,
+              method
+            }),
+            signal: controller.signal,
+          })
+        } finally {
+          clearTimeout(timeoutId)
+        }
+      })()
 
       // Check if the response is successful
       if (!response.ok) {
-        let errorMessage = response.statusText || 'Unknown error occurred'
+        let errorMessage = 'Unable to complete the debug check right now.'
 
         // Try to parse JSON error response
         try {
           const errorData = await response.json()
           if (errorData && typeof errorData === 'object' && errorData.error) {
-            errorMessage = errorData.error
+            errorMessage = sanitizeUserErrorMessage(String(errorData.error))
           }
         } catch {
-          // If JSON parsing fails, use the status text or a default message
-          errorMessage = response.statusText || `HTTP ${response.status}: Request failed`
+          errorMessage = 'Unable to complete the debug check right now.'
         }
 
         setResults({ problems: [], error: errorMessage })
-        toast.error(`Debug failed: ${errorMessage}`)
+        toast.error(errorMessage)
         return
       }
 
@@ -149,9 +203,9 @@ function HomePageContent() {
 
       // Validate that problems is an array
       if (!Array.isArray(raw.problems)) {
-        const message = raw.error ?? 'Unexpected response from debug service.'
+        const message = sanitizeUserErrorMessage(raw.error)
         setResults({ problems: [], error: message })
-        toast.error(`Debug failed: ${message}`)
+        toast.error(message)
         return
       }
 
@@ -162,7 +216,9 @@ function HomePageContent() {
       setResults(data)
 
       if (data.error) {
-        toast.error(`Debug failed: ${data.error}`)
+        const safeError = sanitizeUserErrorMessage(data.error)
+        setResults({ problems: data.problems, error: safeError })
+        toast.error(safeError)
       } else if (data.problems.length === 0) {
         toast.success('No issues found! Domain looks good for Let\'s Encrypt.')
       } else {
@@ -181,7 +237,11 @@ function HomePageContent() {
         }
       }
     } catch (error) {
-      toast.error('Failed to debug domain')
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        toast.error('Request timed out. Please try again.')
+      } else {
+        toast.error('Unable to complete the debug check right now.')
+      }
       console.error('Debug error:', error)
     } finally {
       setLoading(false)
@@ -289,7 +349,8 @@ function HomePageContent() {
                         .sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity])
                         .map((problem, index) => (
                           <div
-                            key={`${problem.name}-${index}`}
+                            // biome-ignore lint/suspicious/noArrayIndexKey: index is only a collision fallback for duplicate API problem objects
+                            key={`${problem.name}-${problem.severity}-${problem.explanation}-${index}`}
                             className={`p-6 rounded-xl ${severityColors[problem.severity as keyof typeof severityColors]}`}
                           >
                             <div className="flex items-start gap-4">
