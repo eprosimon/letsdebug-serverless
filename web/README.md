@@ -23,7 +23,7 @@ A Next.js web application that provides a user-friendly interface for the Let's 
 ### Prerequisites
 
 - Node.js 18+ and pnpm
-- Go 1.24+
+- Go 1.25.9+
 
 ### Development
 

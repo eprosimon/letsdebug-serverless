@@ -6,7 +6,7 @@ This guide explains how to deploy the Let's Debug web application to Vercel.
 
 - A Vercel account
 - The repository connected to Vercel
-- Go 1.24+ support enabled
+- Go 1.25.9+ support enabled
 
 ## Deployment Steps
 
@@ -64,7 +64,7 @@ After deployment, the following endpoints will be available:
 
 ### Build Failures
 
-- Ensure Go 1.24+ is available in the build environment
+- Ensure Go 1.25.9+ is available in the build environment
 - Check that all dependencies are properly installed
 - Verify the `go.mod` file in the `api` directory
 

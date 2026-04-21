@@ -75,9 +75,19 @@ jobs:
           go vet ./...
 
       - name: Check for security issues
+        env:
+          GOTOOLCHAIN: go1.25.9
         run: |
+          go version
+          go env GOVERSION GOTOOLCHAIN GOOS GOARCH
+          GOVERSION_STR="$(go env GOVERSION)"
+          GOVERSION_NUM="${GOVERSION_STR#go}"
+          if ! printf '%s\n%s\n' "1.25.9" "$GOVERSION_NUM" | sort -V -C; then
+            echo "Go version $GOVERSION_STR is below required minimum go1.25.9"
+            exit 1
+          fi
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          govulncheck -show verbose ./...
 
   build:
     name: Build
