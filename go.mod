@@ -3,7 +3,7 @@ module github.com/eprosimon/letsdebug-serverless
 go 1.25.9
 
 require (
-	github.com/eggsampler/acme/v3 v3.8.0
+	github.com/eggsampler/acme/v3 v3.8.1
 	github.com/miekg/dns v1.1.72
 	github.com/weppos/publicsuffix-go v0.50.3
 	golang.org/x/net v0.53.0
