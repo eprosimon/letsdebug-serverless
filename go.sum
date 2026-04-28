@@ -1,5 +1,5 @@
-github.com/eggsampler/acme/v3 v3.8.0 h1:MNP3qVZnAl97l86CHkLdh/O9IBXdjL/AEy7c7QgdJj8=
-github.com/eggsampler/acme/v3 v3.8.0/go.mod h1:/qh0rKC/Dh7Jj+p4So7DbWmFNzC4dpcpK53r226Fhuo=
+github.com/eggsampler/acme/v3 v3.8.1 h1:HmpFs/CIdEXg2NCwSEFBd1BgSzzN8fPzwNZGzp0izrw=
+github.com/eggsampler/acme/v3 v3.8.1/go.mod h1:/qh0rKC/Dh7Jj+p4So7DbWmFNzC4dpcpK53r226Fhuo=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
 github.com/google/go-cmp v0.6.0/go.mod h1:17dUlkBOakJ0+DkrSSNjCkIjxS6bF9zb3elmeNGIjoY=
 github.com/miekg/dns v1.1.72 h1:vhmr+TF2A3tuoGNkLDFK9zi36F2LS+hKTRW0Uf8kbzI=
